@@ -1,0 +1,130 @@
+#!/usr/bin/python3
+import os
+import sys
+import re
+from textwrap import dedent
+from argparse import ArgumentParser, RawDescriptionHelpFormatter
+from itertools import chain
+
+
+def print_error(f, e):
+    print(f'[FAILED] New filename could not be generated (old: {f!r}):', file=sys.stderr)
+    print(f'         {e!r}', file=sys.stderr)
+    return f
+
+
+if __name__ == '__main__':
+    p = ArgumentParser(conflict_handler='resolve', formatter_class=RawDescriptionHelpFormatter)
+    p.add_argument('from_re', type=re.compile, help='Rename all files matching this pattern ...')
+    p.add_argument('to', type=str, help='... to this using re.sub, str.format or fstrings')
+    p.add_argument('--mode', '-m', choices=['match', 'search', 'fullmatch'], default='search',
+                   help='Use re.match or re.fullmatch instead of re.search')
+    p.add_argument('--format-method', '-F', choices=['re.sub', 'str.format', 'fstr'], default='re.sub',
+                   help='Use str.format or fstrings instead of re.sub')
+    p.add_argument('--files-only', '-f', action='store_true', help='Do not rename directories')
+    p.add_argument('--create-dirs', '-c', action='store_const', const='renames', default='rename',
+                   help='Create intermediate directories when renaming using os.renames')
+    p.add_argument('--recursive', '-r', action='store_true', help='Recurse through all subdirectories')
+    p.add_argument('--base-dir', '-b', default='.', metavar='FOLDER', help='Use FOLDER as the root')
+    p.add_argument('--dry-run', '-d', action='store_true', help='Do not really rename the files, implies -v')
+    p.add_argument('--verbose', '-v', action='count', help='Be verbose')
+    p.epilog = dedent(r'''
+    Format methods
+        re.sub [default]
+          This is general purpose and most of the time you want to use that.
+
+        str.format
+          Maybe this is useful for some kind of stuff, not sure.
+          {0} is the full original name, {1}...{n} are the nth matched groups.
+
+        fstr
+          {g0} is the full original name, {g1}...{gn} are the nth matched groups.
+          If re does not work for you, this might help.
+          If you have files matching '^some_name_(\d+)(?P<ext>\..+)$' and you
+          want 001, 002, ... instead of 1, 2, ..., 10, 11, ..., 100, 101, ...
+          you can do:
+            $ rexname -F fstr "^some_name_(\d+)(?P<ext>\..+)$" "some_name_{g1:0>3}{ext}"
+          Maybe you decide that this was a bad idea and then you can simply do
+            $ rexname -F fstr "^some_name_(\d+)(?P<ext>\..+)$" "some_name_{int(g1)}{ext}"
+
+    Regex cheat sheet
+        ()         capturing group
+        (?P<name>) named capturing group
+        (?:)       non-capturing group
+        \X         match the Xth captured group
+        (?P=name)  match the captured group named name
+        (?#)       comment
+
+        \d         digit
+        \s         space
+        \w         word
+
+        ^          start of string
+        \A         start of string, ignore m flag
+        $          end of string
+        \Z         end of string, ignore m flag
+        \b         word boundary
+
+        (?=)       positive lookahead
+        (?!)       negative lookahead
+        (?<=)      positive lookbehind
+        (?<!)      negative lookbehind
+        (?()|)     conditional
+        (?imsxLu)  at the start of the regex: set flags:
+                   i ignore case
+                   m multiline, ^$ match line endings
+                   s . matches newlines
+                   x allow spaces and comments
+                   L locale character class
+                   u unicode character class
+    Replacement:
+        \g<0>      insert full match
+        \g<X>      insert captured group X (name or number)
+        \X         insert captured group numbered X
+    ''')
+    args = p.parse_args()
+
+    if args.dry_run:
+        args.verbose = True
+    if args.verbose:
+        print(f'[ INFO ] from_re: {args.from_re}')
+        print(f'[ INFO ] to     : {args.to}')
+    if args.recursive and not args.files_only:
+        print('[ WARN ] Cannot recurse and rename folders at the same time, switching --files-only on',
+              file=sys.stderr)  # TODO: implement that function!
+        args.files_only = True
+    if not os.path.isdir(os.path.realpath(args.base_dir)):
+        print('[FAILED] --base-dir must be a directory: {args.base_dir!r}', file=sys.stderr)
+        exit(1)
+    if args.format_method == 'fstr':
+        template = compile('f%r' % args.to, '<commandline_argument>', 'eval')  # PEP 501 hack
+
+    for root, folders, files in os.walk(args.base_dir):
+        if not args.recursive and root != args.base_dir:
+            break  # assuming the root = args.base_dir is always the first element
+            # continue
+        for f in (files if args.files_only else chain(files, folders)):
+            m = getattr(re, args.mode)(args.from_re, f)
+            if not bool(m):
+                continue
+            if args.format_method == 'str.format':
+                try:
+                    n = args.to.format(f, *m.groups(), **m.groupdict())
+                except Exception as e:
+                    n = print_error(f, e)
+            if args.format_method == 'fstr':
+                try:
+                    n = eval(template, {}, {'g0': f,
+                                            **{f'g{i+1}': x for i, x in enumerate(m.groups())},
+                                            **m.groupdict()})
+                except Exception as e:
+                    n = print_error(f, e)
+            else:
+                try:
+                    n = re.sub(args.from_re, args.to, f)
+                except Exception as e:
+                    n = print_error(f, e)
+            if args.verbose:
+                print(f'  {os.path.join(root, f)!r} -> {os.path.join(root, n)!r}')
+            if not args.dry_run:
+                getattr(os, args.create_dirs)(os.path.join(root, f), os.path.join(root, n))
