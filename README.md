@@ -1,4 +1,5 @@
-# rexname
+# rexname <img src="https://svgsilh.com/png-512/2730569-3f51b5.png" height="72rem" align="right">
+<!-- cc0 image: https://svgsilh.com/3f51b5/image/2730570.html -->
 Simple but powerful renaming utility written in python
 
 # requirements
